@@ -30,7 +30,10 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
   const [rectStart, setRectStart] = useState<{ x: number; y: number } | null>(null);
   const [rectCurrent, setRectCurrent] = useState<{ x: number; y: number } | null>(null);
 
-  const map = useMapStore((s) => ({ width: s.width, height: s.height, cells: s.cells }));
+  const mapWidth = useMapStore((s) => s.width);
+  const mapHeight = useMapStore((s) => s.height);
+  const mapCells = useMapStore((s) => s.cells);
+  const map = useMemo(() => ({ width: mapWidth, height: mapHeight, cells: mapCells }), [mapCells, mapHeight, mapWidth]);
   const applyCells = useMapStore((s) => s.setCells);
   const getCell = useMapStore((s) => s.getCell);
   const provinces = useProvinceStore((s) => s.provinces);
@@ -41,8 +44,20 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
   const getStateOfProvince = useStateStore((s) => s.getStateOfProvince);
   const updateState = useStateStore((s) => s.updateState);
   const countries = useCountryStore((s) => s.countries);
-  const toolState = useToolStore((s) => s);
-  const view = useViewStore((s) => s);
+  const activeTool = useToolStore((s) => s.activeTool);
+  const brushSize = useToolStore((s) => s.brushSize);
+  const brushShape = useToolStore((s) => s.brushShape);
+  const activeProvinceId = useToolStore((s) => s.activeProvinceId);
+  const activeTerrainType = useToolStore((s) => s.activeTerrainType);
+  const activeStateId = useToolStore((s) => s.activeStateId);
+  const activeCountryTag = useToolStore((s) => s.activeCountryTag);
+  const setActiveProvinceId = useToolStore((s) => s.setActiveProvinceId);
+  const setActiveTool = useToolStore((s) => s.setTool);
+  const viewOffsetX = useViewStore((s) => s.offsetX);
+  const viewOffsetY = useViewStore((s) => s.offsetY);
+  const viewZoom = useViewStore((s) => s.zoom);
+  const viewMode = useViewStore((s) => s.viewMode);
+  const viewCursor = useViewStore((s) => s.cursor);
   const setViewOffset = useViewStore((s) => s.setOffset);
   const setViewCursor = useViewStore((s) => s.setCursor);
   const wheelZoom = useViewStore((s) => s.handleWheelZoom);
@@ -50,6 +65,8 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
   const toggleMultiProvince = useSelectionStore((s) => s.toggleMultiProvince);
   const selectedProvinceId = useSelectionStore((s) => s.selectedProvinceId);
   const pushHistory = useHistoryStore((s) => s.pushAction);
+  const toolState = { activeTool, brushSize, brushShape, activeProvinceId, activeTerrainType, activeStateId, activeCountryTag, setActiveProvinceId, setTool: setActiveTool };
+  const view = { offsetX: viewOffsetX, offsetY: viewOffsetY, zoom: viewZoom, viewMode, cursor: viewCursor, setOffset: setViewOffset, setCursor: setViewCursor, handleWheelZoom: wheelZoom };
 
   const provinceToState = useMemo(() => {
     const rel = new Map<number, number>();
@@ -321,7 +338,7 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
     const bounds = canvas.getBoundingClientRect();
     const sx = event.clientX - bounds.left;
     const sy = event.clientY - bounds.top;
-    setViewCursor({ x: sx, y: sy });
+    view.setCursor({ x: sx, y: sy });
 
     if (event.button === 1 || event.altKey || event.button === 2) {
       setIsPanning(true);
@@ -346,10 +363,10 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
     const bounds = canvas.getBoundingClientRect();
     const sx = event.clientX - bounds.left;
     const sy = event.clientY - bounds.top;
-    setViewCursor({ x: sx, y: sy });
+    view.setCursor({ x: sx, y: sy });
 
     if (isPanning && panStart) {
-      setViewOffset(view.offsetX + (sx - panStart.x), view.offsetY + (sy - panStart.y));
+      view.setOffset(view.offsetX + (sx - panStart.x), view.offsetY + (sy - panStart.y));
       setPanStart({ x: sx, y: sy });
       return;
     }
@@ -410,7 +427,7 @@ export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps)
           const canvas = canvasRef.current;
           if (!canvas) return;
           const rect = canvas.getBoundingClientRect();
-          wheelZoom(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
+          view.handleWheelZoom(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
         }}
         onContextMenu={(event) => {
           event.preventDefault();
