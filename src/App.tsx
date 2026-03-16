@@ -57,7 +57,10 @@ function cloneProvince(p: Province): Province {
 }
 
 export function App() {
-  const map = useMapStore((s) => ({ width: s.width, height: s.height, cells: s.cells }));
+  const mapWidth = useMapStore((s) => s.width);
+  const mapHeight = useMapStore((s) => s.height);
+  const mapCells = useMapStore((s) => s.cells);
+  const map = useMemo(() => ({ width: mapWidth, height: mapHeight, cells: mapCells }), [mapCells, mapHeight, mapWidth]);
   const initializeMap = useMapStore((s) => s.initializeMap);
   const setRawMap = useMapStore((s) => s.setRawMap);
   const setCells = useMapStore((s) => s.setCells);
@@ -76,12 +79,70 @@ export function App() {
   const addCountry = useCountryStore((s) => s.addCountry);
   const setCountries = useCountryStore((s) => s.setCountries);
 
-  const tool = useToolStore((s) => s);
-  const view = useViewStore((s) => s);
+  const toolActiveTool = useToolStore((s) => s.activeTool);
+  const toolBrushSize = useToolStore((s) => s.brushSize);
+  const toolBrushShape = useToolStore((s) => s.brushShape);
+  const toolActiveProvinceId = useToolStore((s) => s.activeProvinceId);
+  const toolActiveStateId = useToolStore((s) => s.activeStateId);
+  const toolActiveCountryTag = useToolStore((s) => s.activeCountryTag);
+  const toolActiveTerrainType = useToolStore((s) => s.activeTerrainType);
+  const toolSetTool = useToolStore((s) => s.setTool);
+  const toolSetBrushSize = useToolStore((s) => s.setBrushSize);
+  const toolSetBrushShape = useToolStore((s) => s.setBrushShape);
+  const toolSetActiveProvinceId = useToolStore((s) => s.setActiveProvinceId);
+  const toolSetActiveStateId = useToolStore((s) => s.setActiveStateId);
+  const toolSetActiveCountryTag = useToolStore((s) => s.setActiveCountryTag);
+  const toolSetActiveTerrainType = useToolStore((s) => s.setActiveTerrainType);
+  const tool = useMemo(
+    () => ({
+      activeTool: toolActiveTool,
+      brushSize: toolBrushSize,
+      brushShape: toolBrushShape,
+      activeProvinceId: toolActiveProvinceId,
+      activeStateId: toolActiveStateId,
+      activeCountryTag: toolActiveCountryTag,
+      activeTerrainType: toolActiveTerrainType,
+      setTool: toolSetTool,
+      setBrushSize: toolSetBrushSize,
+      setBrushShape: toolSetBrushShape,
+      setActiveProvinceId: toolSetActiveProvinceId,
+      setActiveStateId: toolSetActiveStateId,
+      setActiveCountryTag: toolSetActiveCountryTag,
+      setActiveTerrainType: toolSetActiveTerrainType,
+    }),
+    [
+      toolActiveCountryTag,
+      toolActiveProvinceId,
+      toolActiveStateId,
+      toolActiveTerrainType,
+      toolActiveTool,
+      toolBrushShape,
+      toolBrushSize,
+      toolSetActiveCountryTag,
+      toolSetActiveProvinceId,
+      toolSetActiveStateId,
+      toolSetActiveTerrainType,
+      toolSetBrushShape,
+      toolSetBrushSize,
+      toolSetTool,
+    ],
+  );
+  const viewViewMode = useViewStore((s) => s.viewMode);
+  const viewZoom = useViewStore((s) => s.zoom);
+  const viewOffsetX = useViewStore((s) => s.offsetX);
+  const viewOffsetY = useViewStore((s) => s.offsetY);
+  const viewCursor = useViewStore((s) => s.cursor);
+  const viewSetViewMode = useViewStore((s) => s.setViewMode);
+  const view = useMemo(
+    () => ({ viewMode: viewViewMode, zoom: viewZoom, offsetX: viewOffsetX, offsetY: viewOffsetY, cursor: viewCursor, setViewMode: viewSetViewMode }),
+    [viewCursor, viewOffsetX, viewOffsetY, viewSetViewMode, viewViewMode, viewZoom],
+  );
   const setZoom = useViewStore((s) => s.setZoom);
   const setOffset = useViewStore((s) => s.setOffset);
   const zoomToFit = useViewStore((s) => s.zoomToFit);
-  const selection = useSelectionStore((s) => s);
+  const selectedProvinceId = useSelectionStore((s) => s.selectedProvinceId);
+  const selectProvince = useSelectionStore((s) => s.selectProvince);
+  const selection = useMemo(() => ({ selectedProvinceId, selectProvince }), [selectProvince, selectedProvinceId]);
 
   const undoStack = useHistoryStore((s) => s.undoStack);
   const redoStack = useHistoryStore((s) => s.redoStack);
@@ -91,7 +152,15 @@ export function App() {
 
   const setAdjacencies = useAdjacencyStore((s) => s.setAdjacencies);
   const adjacencies = useAdjacencyStore((s) => s.adjacencies);
-  const settings = useSettingsStore((s) => s);
+  const projectName = useSettingsStore((s) => s.projectName);
+  const author = useSettingsStore((s) => s.author);
+  const exportScale = useSettingsStore((s) => s.exportScale);
+  const setProjectMeta = useSettingsStore((s) => s.setProjectMeta);
+  const setExportScaleValue = useSettingsStore((s) => s.setExportScale);
+  const settings = useMemo(
+    () => ({ projectName, author, exportScale, setProjectMeta, setExportScale: setExportScaleValue }),
+    [author, exportScale, projectName, setExportScaleValue, setProjectMeta],
+  );
   const bookmarks = useBookmarkStore((s) => s.bookmarks);
   const addBookmark = useBookmarkStore((s) => s.addBookmark);
   const removeBookmark = useBookmarkStore((s) => s.removeBookmark);
