@@ -1,4 +1,4 @@
-import type { Country, ExportSettings, MapData, ProjectData, Province, State } from "@/types";
+import type { Country, MapData, ProjectData, Province, State } from "@/types";
 import { TerrainType, ViewMode } from "@/types/enums";
 import { TERRAIN_COLORS } from "./constants";
 

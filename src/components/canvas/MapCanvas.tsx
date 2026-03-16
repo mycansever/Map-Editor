@@ -16,9 +16,10 @@ import { rgbToCss } from "@/utils/colorUtils";
 
 interface MapCanvasProps {
   onMapEdited: () => void;
+  onContextMenuRequest?: (payload: { screenX: number; screenY: number; gridX: number; gridY: number; provinceId: number }) => void;
 }
 
-export function MapCanvas({ onMapEdited }: MapCanvasProps) {
+export function MapCanvas({ onMapEdited, onContextMenuRequest }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isPainting, setIsPainting] = useState(false);
@@ -411,7 +412,24 @@ export function MapCanvas({ onMapEdited }: MapCanvasProps) {
           const rect = canvas.getBoundingClientRect();
           wheelZoom(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
         }}
-        onContextMenu={(event) => event.preventDefault()}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          if (!onContextMenuRequest) return;
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const bounds = canvas.getBoundingClientRect();
+          const sx = event.clientX - bounds.left;
+          const sy = event.clientY - bounds.top;
+          const grid = screenToGrid(sx, sy);
+          if (grid.x < 0 || grid.y < 0 || grid.x >= map.width || grid.y >= map.height) return;
+          onContextMenuRequest({
+            screenX: event.clientX,
+            screenY: event.clientY,
+            gridX: grid.x,
+            gridY: grid.y,
+            provinceId: getCell(grid.x, grid.y),
+          });
+        }}
       />
     </div>
   );
