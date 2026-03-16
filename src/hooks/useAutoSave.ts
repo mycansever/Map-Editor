@@ -9,6 +9,22 @@ import { buildProjectData } from "@/utils/fileUtils";
 
 const SAVE_KEY = "gse-autosave-v4";
 
+function safeSetItem(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Storage can be blocked by browser privacy settings.
+  }
+}
+
+function safeGetItem(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export function useAutoSave(): void {
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -27,12 +43,12 @@ export function useAutoSave(): void {
         { name: settings.projectName, author: settings.author },
         settings.exportScale,
       );
-      localStorage.setItem(SAVE_KEY, JSON.stringify(project));
+      safeSetItem(SAVE_KEY, JSON.stringify(project));
     }, 30000);
     return () => window.clearInterval(timer);
   }, []);
 }
 
 export function restoreFromAutoSave(): string | null {
-  return localStorage.getItem(SAVE_KEY);
+  return safeGetItem(SAVE_KEY);
 }
