@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   BookOpen,
   Brush,
   Eraser,
   Flag,
   FolderOpen,
   GanttChartSquare,
+  Info,
   MapPinned,
   Pickaxe,
   Pipette,
@@ -38,13 +40,24 @@ import { useExport } from "@/hooks/useExport";
 import { calculateAdjacencies } from "@/algorithms/adjacencyCalculator";
 import { recomputeProvinceGeography } from "@/algorithms/mapAnalysis";
 import { generateRandomMap } from "@/algorithms/randomMapGenerator";
+import { analyzeProjectData } from "@/features/project/projectDiagnostics";
 import { OCEAN_PROVINCE_ID } from "@/utils/constants";
 import { buildProjectData, downloadText } from "@/utils/fileUtils";
 import type { ExportSettings, ProjectData, Province } from "@/types";
 import { BrushShape, ProvinceType, TerrainType, ToolType, ViewMode } from "@/types/enums";
 
-type SideTab = "province" | "state" | "country" | "stats" | "history" | "bookmarks";
+type SideTab = "province" | "state" | "country" | "diagnostics" | "stats" | "history" | "bookmarks";
 
+interface ImportSummary {
+  title: string;
+  projectName: string;
+  provinceCount: number;
+  landCount: number;
+  seaCount: number;
+  stateCount: number;
+  countryCount: number;
+  mapSize: string;
+}
 
 function isProjectData(value: unknown): value is ProjectData {
   if (!value || typeof value !== "object") return false;
@@ -95,6 +108,7 @@ export function App() {
   const addState = useStateStore((s) => s.addState);
   const setStates = useStateStore((s) => s.setStates);
   const updateState = useStateStore((s) => s.updateState);
+  const getStateOfProvince = useStateStore((s) => s.getStateOfProvince);
   const countries = useCountryStore((s) => s.countries);
   const addCountry = useCountryStore((s) => s.addCountry);
   const setCountries = useCountryStore((s) => s.setCountries);
@@ -161,7 +175,9 @@ export function App() {
   const setOffset = useViewStore((s) => s.setOffset);
   const zoomToFit = useViewStore((s) => s.zoomToFit);
   const selectedProvinceId = useSelectionStore((s) => s.selectedProvinceId);
+  const multiSelectedProvinces = useSelectionStore((s) => s.multiSelectedProvinces);
   const selectProvince = useSelectionStore((s) => s.selectProvince);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selection = useMemo(() => ({ selectedProvinceId, selectProvince }), [selectProvince, selectedProvinceId]);
 
   const undoStack = useHistoryStore((s) => s.undoStack);
@@ -190,14 +206,20 @@ export function App() {
 
   const [activeTab, setActiveTab] = useState<SideTab>("province");
   const [search, setSearch] = useState("");
-  const [rightPanelWidth] = useState(320);
+  const [rightPanelWidth] = useState(340);
   const [showRandomDialog, setShowRandomDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showOpenAutoSave, setShowOpenAutoSave] = useState(false);
+  const [showImportSummary, setShowImportSummary] = useState(false);
+  const [showExportValidation, setShowExportValidation] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; provinceId: number } | null>(null);
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [randomConfig, setRandomConfig] = useState({ width: 220, height: 140, provinceCount: 420, countryCount: 8, seaRatio: 0.4, seed: 42 });
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationStatus, setGenerationStatus] = useState("");
+  const [bulkPrefix, setBulkPrefix] = useState("");
+  const [bulkSuffix, setBulkSuffix] = useState("");
+  const [bulkDevelopment, setBulkDevelopment] = useState(5);
   const [exportSettings, setExportSettings] = useState<ExportSettings>({
     pixelsPerCell: 8,
     antiAlias: false,
@@ -220,8 +242,26 @@ export function App() {
   const provinceArray = useMemo(() => Array.from(provinces.values()), [provinces]);
   const stateArray = useMemo(() => Array.from(states.values()), [states]);
   const countryArray = useMemo(() => Array.from(countries.values()), [countries]);
-
   const selectedProvince = selection.selectedProvinceId ? provinces.get(selection.selectedProvinceId) ?? null : null;
+
+  const effectiveSelectedProvinceIds = useMemo(() => {
+    const ids = new Set<number>(multiSelectedProvinces);
+    if (selectedProvinceId !== null) ids.add(selectedProvinceId);
+    ids.delete(OCEAN_PROVINCE_ID);
+    return Array.from(ids);
+  }, [multiSelectedProvinces, selectedProvinceId]);
+
+  const selectedProvinceObjects = useMemo(
+    () => effectiveSelectedProvinceIds.map((id) => provinces.get(id)).filter((province): province is Province => Boolean(province)),
+    [effectiveSelectedProvinceIds, provinces],
+  );
+
+  const diagnostics = useMemo(
+    () => analyzeProjectData(map, provinceArray, stateArray, countryArray, adjacencies),
+    [adjacencies, countryArray, map, provinceArray, stateArray],
+  );
+
+  const diagnosticPreview = diagnostics.issues.slice(0, 12);
 
   const recomputeDerived = () => {
     const currentMap = useMapStore.getState();
@@ -244,6 +284,11 @@ export function App() {
     recomputeDerived();
   };
 
+  const showImportSummaryModal = (summary: ImportSummary) => {
+    setImportSummary(summary);
+    setShowImportSummary(true);
+  };
+
   const newProject = () => {
     const width = Number(window.prompt("Map width (20-500)", "120") ?? "120");
     const height = Number(window.prompt("Map height (20-500)", "80") ?? "80");
@@ -256,6 +301,7 @@ export function App() {
     setCountries([]);
     clearHistory();
     setAdjacencies([]);
+    clearSelection();
     toast.success("New project created");
     window.setTimeout(() => zoomToFit(safeW, safeH, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
   };
@@ -290,7 +336,18 @@ export function App() {
     settings.setProjectMeta(data.name, data.author);
     settings.setExportScale(Math.max(8, data.settings.exportScale));
     clearHistory();
+    clearSelection();
     toast.success("Project loaded");
+    showImportSummaryModal({
+      title: "Project import complete",
+      projectName: data.name,
+      provinceCount: data.provinces.length,
+      landCount: data.provinces.filter((province) => province.type === ProvinceType.Land).length,
+      seaCount: data.provinces.filter((province) => province.type === ProvinceType.Sea).length,
+      stateCount: data.states.length,
+      countryCount: data.countries.length,
+      mapSize: `${safeWidth} x ${safeHeight}`,
+    });
     window.setTimeout(() => zoomToFit(safeWidth, safeHeight, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
   };
 
@@ -321,9 +378,20 @@ export function App() {
     setCountries(result.countries);
     setAdjacencies(calculateAdjacencies(result.map, new Map(result.provinces.map((p) => [p.id, p]))));
     clearHistory();
+    clearSelection();
     setGenerationProgress(100);
     setGenerationStatus("Done");
     toast.success(`Random map generated: ${result.provinces.length} provinces`);
+    showImportSummaryModal({
+      title: "Random generation complete",
+      projectName: settings.projectName,
+      provinceCount: result.provinces.length,
+      landCount: result.provinces.filter((province) => province.type === ProvinceType.Land).length,
+      seaCount: result.provinces.filter((province) => province.type === ProvinceType.Sea).length,
+      stateCount: result.states.length,
+      countryCount: result.countries.length,
+      mapSize: `${result.map.width} x ${result.map.height}`,
+    });
     window.setTimeout(() => {
       setShowRandomDialog(false);
       setGenerationProgress(0);
@@ -400,9 +468,20 @@ export function App() {
       setStates([]);
       setCountries([]);
       clearHistory();
+      clearSelection();
       recomputeDerived();
       settings.setProjectMeta(file.name.replace(/\.[^.]+$/, ""), settings.author);
       toast.success(`Image imported: ${colorToProvince.size} provinces`);
+      showImportSummaryModal({
+        title: "Image import complete",
+        projectName: file.name.replace(/\.[^.]+$/, ""),
+        provinceCount: importedProvinces.length,
+        landCount: importedProvinces.filter((province) => province.type === ProvinceType.Land).length,
+        seaCount: importedProvinces.filter((province) => province.type === ProvinceType.Sea).length,
+        stateCount: 0,
+        countryCount: 0,
+        mapSize: `${width} x ${height}`,
+      });
       window.setTimeout(() => zoomToFit(width, height, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
     } finally {
       bitmap.close();
@@ -425,6 +504,128 @@ export function App() {
     const targetZoom = Math.max(8, view.zoom);
     setZoom(targetZoom);
     setOffset(viewport.clientWidth / 2 - province.centroid.x * targetZoom, viewport.clientHeight / 2 - province.centroid.y * targetZoom);
+  };
+
+  const deleteProvinceAndCleanup = (targetId: number) => {
+    if (targetId === OCEAN_PROVINCE_ID) return;
+    const province = provinces.get(targetId);
+    const linkedState = getStateOfProvince(targetId);
+    const dependencyCount = [
+      linkedState ? 1 : 0,
+      countryArray.filter((country) => country.capitalProvince === targetId).length,
+      adjacencies.filter((adjacency) => adjacency.from === targetId || adjacency.to === targetId).length,
+    ].reduce((sum, value) => sum + value, 0);
+    const confirmed = window.confirm(
+      `Delete ${province?.name ?? `Province #${targetId}`}? This will repaint its cells to ocean and affect ${dependencyCount} related records.`,
+    );
+    if (!confirmed) return;
+
+    const changes: Array<{ x: number; y: number; provinceId: number }> = [];
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width; x++) {
+        if (map.cells[y * map.width + x] === targetId) changes.push({ x, y, provinceId: OCEAN_PROVINCE_ID });
+      }
+    }
+    setCells(changes);
+    removeProvince(targetId);
+
+    const nextStates = stateArray.map((state) => {
+      const filteredProvinces = state.provinces.filter((provinceId) => provinceId !== targetId);
+      return {
+        ...state,
+        provinces: filteredProvinces,
+        capital: state.capital === targetId ? filteredProvinces[0] ?? OCEAN_PROVINCE_ID : state.capital,
+      };
+    });
+    setStates(nextStates);
+
+    const nextCountries = countryArray.map((country) => ({
+      ...country,
+      capitalProvince: country.capitalProvince === targetId ? OCEAN_PROVINCE_ID : country.capitalProvince,
+      states: country.states.filter((stateId) => nextStates.some((state) => state.id === stateId && state.provinces.length > 0)),
+    }));
+    setCountries(nextCountries);
+    clearSelection();
+    recomputeDerived();
+    toast.success("Province deleted with dependency cleanup");
+  };
+
+  const applyBulkAction = (action: "terrain" | "state" | "owner" | "development" | "prefix" | "suffix") => {
+    if (selectedProvinceObjects.length === 0) {
+      toast.error("Select at least one province first");
+      return;
+    }
+
+    if (action === "terrain") {
+      selectedProvinceObjects.forEach((province) => updateProvince(province.id, { terrain: tool.activeTerrainType }));
+      toast.success(`Updated terrain for ${selectedProvinceObjects.length} provinces`);
+      return;
+    }
+
+    if (action === "development") {
+      selectedProvinceObjects.forEach((province) => updateProvince(province.id, { development: bulkDevelopment }));
+      toast.success(`Updated development for ${selectedProvinceObjects.length} provinces`);
+      return;
+    }
+
+    if (action === "prefix") {
+      selectedProvinceObjects.forEach((province) => updateProvince(province.id, { name: `${bulkPrefix}${province.name}` }));
+      toast.success(`Applied prefix to ${selectedProvinceObjects.length} provinces`);
+      return;
+    }
+
+    if (action === "suffix") {
+      selectedProvinceObjects.forEach((province) => updateProvince(province.id, { name: `${province.name}${bulkSuffix}` }));
+      toast.success(`Applied suffix to ${selectedProvinceObjects.length} provinces`);
+      return;
+    }
+
+    if (action === "state") {
+      if (!tool.activeStateId) {
+        toast.error("Choose a target state first");
+        return;
+      }
+      const selectedIds = new Set(selectedProvinceObjects.map((province) => province.id));
+      const nextStates = stateArray.map((state) => {
+        const removedFromState = state.provinces.filter((provinceId) => !selectedIds.has(provinceId));
+        if (state.id === tool.activeStateId) {
+          const combined = Array.from(new Set([...removedFromState, ...selectedIds]));
+          return {
+            ...state,
+            provinces: combined,
+            capital: combined.includes(state.capital) ? state.capital : combined[0] ?? state.capital,
+          };
+        }
+        return {
+          ...state,
+          provinces: removedFromState,
+          capital: removedFromState.includes(state.capital) ? state.capital : removedFromState[0] ?? OCEAN_PROVINCE_ID,
+        };
+      });
+      setStates(nextStates);
+      toast.success(`Assigned ${selectedProvinceObjects.length} provinces to state #${tool.activeStateId}`);
+      return;
+    }
+
+    if (!tool.activeCountryTag) {
+      toast.error("Choose a target country first");
+      return;
+    }
+    const affectedStateIds = new Set<number>();
+    selectedProvinceObjects.forEach((province) => {
+      const state = getStateOfProvince(province.id);
+      if (state) affectedStateIds.add(state.id);
+    });
+    affectedStateIds.forEach((stateId) => updateState(stateId, { owner: tool.activeCountryTag, controller: tool.activeCountryTag }));
+    toast.success(`Assigned owner ${tool.activeCountryTag} to ${affectedStateIds.size} states`);
+  };
+
+  const runValidatedExport = async () => {
+    if (diagnostics.counts.errors > 0 || diagnostics.counts.warnings > 0) {
+      setShowExportValidation(true);
+      return;
+    }
+    await runExport(exportSettings);
   };
 
   useEffect(() => {
@@ -566,6 +767,15 @@ export function App() {
           </select>
 
           <button className="btn mt-3 w-full" onClick={() => imageInputRef.current?.click()}>Import PNG</button>
+
+          <div className="mt-4 rounded border border-slate-800 bg-slate-900/70 p-3 text-xs">
+            <div className="flex items-center justify-between">
+              <p className="uppercase tracking-wide text-slate-400">Selected provinces</p>
+              <span className="rounded bg-slate-800 px-2 py-0.5">{selectedProvinceObjects.length}</span>
+            </div>
+            <p className="mt-2 text-slate-400">Shift+click or rectangle select on the canvas to build a multi-selection.</p>
+            <button className="btn mt-3 w-full" onClick={() => setActiveTab("province")}>Open bulk edit panel</button>
+          </div>
         </aside>
 
         <main ref={mapViewportRef} className="relative flex-1">
@@ -599,8 +809,8 @@ export function App() {
         </main>
 
         <aside style={{ width: rightPanelWidth }} className="border-l border-slate-800 bg-[#121427]">
-          <div className="flex border-b border-slate-800 text-xs">
-            {(["province", "state", "country", "stats", "history", "bookmarks"] as SideTab[]).map((tab) => (
+          <div className="flex border-b border-slate-800 text-[11px]">
+            {(["province", "state", "country", "diagnostics", "stats", "history", "bookmarks"] as SideTab[]).map((tab) => (
               <button key={tab} className={`flex-1 px-1 py-2 uppercase ${activeTab === tab ? "bg-slate-800 text-blue-300" : "text-slate-400"}`} onClick={() => setActiveTab(tab)}>{tab}</button>
             ))}
           </div>
@@ -626,6 +836,45 @@ export function App() {
                     <input type="range" min={1} max={30} value={selectedProvince.development} onChange={(e) => updateProvince(selectedProvince.id, { development: Number(e.target.value) })} className="w-full" />
                   </div>
                 )}
+
+                <div className="rounded border border-blue-900/60 bg-slate-900/80 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-blue-200">Selected provinces</p>
+                    <span className="rounded bg-slate-800 px-2 py-0.5 text-xs">{selectedProvinceObjects.length}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">Use this panel to bulk-edit terrain, owner, state assignment, development and naming.</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button className="btn" onClick={() => applyBulkAction("terrain")}>Apply terrain</button>
+                    <button className="btn" onClick={() => applyBulkAction("owner")}>Apply owner</button>
+                    <button className="btn" onClick={() => applyBulkAction("state")}>Assign state</button>
+                    <button className="btn" onClick={() => applyBulkAction("development")}>Set development</button>
+                  </div>
+                  <label className="mt-3 block text-xs text-slate-400">Development</label>
+                  <input type="range" min={1} max={30} value={bulkDevelopment} onChange={(e) => setBulkDevelopment(Number(e.target.value))} className="w-full" />
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-slate-400">Prefix</label>
+                      <input className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1" value={bulkPrefix} onChange={(e) => setBulkPrefix(e.target.value)} />
+                      <button className="btn mt-2 w-full" onClick={() => applyBulkAction("prefix")}>Apply prefix</button>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400">Suffix</label>
+                      <input className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1" value={bulkSuffix} onChange={(e) => setBulkSuffix(e.target.value)} />
+                      <button className="btn mt-2 w-full" onClick={() => applyBulkAction("suffix")}>Apply suffix</button>
+                    </div>
+                  </div>
+                  {selectedProvinceObjects.length > 0 && (
+                    <div className="mt-3 rounded border border-slate-700 bg-slate-950/70 p-2 text-xs text-slate-300">
+                      {selectedProvinceObjects.slice(0, 6).map((province) => (
+                        <div key={province.id} className="flex items-center justify-between py-0.5">
+                          <span>{province.name}</span>
+                          <span className="text-slate-500">#{province.id}</span>
+                        </div>
+                      ))}
+                      {selectedProvinceObjects.length > 6 && <p className="mt-1 text-slate-500">+{selectedProvinceObjects.length - 6} more provinces selected</p>}
+                    </div>
+                  )}
+                </div>
 
                 {filteredProvinces.slice(0, 140).map((province) => (
                   <button key={province.id} className="flex w-full items-center justify-between rounded border border-slate-700 bg-slate-900 px-2 py-1 text-left hover:border-slate-500" onClick={() => focusProvince(province.id)}>
@@ -663,6 +912,42 @@ export function App() {
                     <p className="text-xs text-slate-400">States: {country.states.length}</p>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {activeTab === "diagnostics" && (
+              <div className="space-y-3">
+                <div className="rounded border border-slate-700 bg-slate-900/80 p-3">
+                  <p className="font-semibold">Project diagnostics</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                    <div className="rounded border border-red-900/80 bg-red-950/30 p-2 text-red-200">Errors: {diagnostics.counts.errors}</div>
+                    <div className="rounded border border-amber-900/80 bg-amber-950/30 p-2 text-amber-200">Warnings: {diagnostics.counts.warnings}</div>
+                    <div className="rounded border border-slate-700 bg-slate-950/60 p-2 text-slate-200">Info: {diagnostics.counts.infos}</div>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-400">Run this before exporting to catch broken references, empty provinces and missing ownership links.</p>
+                </div>
+
+                {diagnosticPreview.length === 0 ? (
+                  <div className="rounded border border-emerald-900/80 bg-emerald-950/20 p-3 text-sm text-emerald-200">No diagnostics found. The current project looks internally consistent.</div>
+                ) : (
+                  diagnosticPreview.map((issue) => (
+                    <div key={issue.id} className={`rounded border p-3 ${issue.severity === "error" ? "border-red-900/70 bg-red-950/20" : issue.severity === "warning" ? "border-amber-900/70 bg-amber-950/20" : "border-slate-700 bg-slate-900"}`}>
+                      <div className="flex items-start gap-2">
+                        {issue.severity === "error" ? <AlertTriangle className="mt-0.5 h-4 w-4 text-red-300" /> : <Info className="mt-0.5 h-4 w-4 text-amber-300" />}
+                        <div>
+                          <p className="font-medium">{issue.title}</p>
+                          <p className="mt-1 text-xs text-slate-300">{issue.detail}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {diagnostics.issues.length > diagnosticPreview.length && (
+                  <div className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-400">
+                    Showing first {diagnosticPreview.length} issues out of {diagnostics.issues.length}. Fix the high-severity items first.
+                  </div>
+                )}
               </div>
             )}
 
@@ -707,7 +992,7 @@ export function App() {
 
       <footer className="flex h-8 items-center justify-between border-t border-slate-800 bg-[#15172a] px-3 text-xs text-slate-300">
         <div>Zoom: {view.zoom.toFixed(1)}x | Cursor: {view.cursor ? `${Math.floor((view.cursor.x - view.offsetX) / view.zoom)}, ${Math.floor((view.cursor.y - view.offsetY) / view.zoom)}` : "-"} | Tool: {tool.activeTool}</div>
-        <div>{settings.projectName} | Autosave every 30s</div>
+        <div>{settings.projectName} | Autosave every 30s | Diagnostics: {diagnostics.counts.errors}E / {diagnostics.counts.warnings}W</div>
       </footer>
 
       {contextMenu && (
@@ -715,22 +1000,7 @@ export function App() {
           <button className="menu-item" onClick={() => { selection.selectProvince(contextMenu.provinceId); setContextMenu(null); }}>Select Province</button>
           <button className="menu-item" onClick={() => { tool.setActiveProvinceId(contextMenu.provinceId); tool.setTool(ToolType.Paint); setContextMenu(null); }}>Paint With This</button>
           <button className="menu-item" onClick={() => { focusProvince(contextMenu.provinceId); setContextMenu(null); }}>Zoom To Province</button>
-          <button
-            className="menu-item text-red-300"
-            onClick={() => {
-              const targetId = contextMenu.provinceId;
-              const changes: Array<{ x: number; y: number; provinceId: number }> = [];
-              for (let y = 0; y < map.height; y++) {
-                for (let x = 0; x < map.width; x++) {
-                  if (map.cells[y * map.width + x] === targetId) changes.push({ x, y, provinceId: OCEAN_PROVINCE_ID });
-                }
-              }
-              setCells(changes);
-              removeProvince(targetId);
-              recomputeDerived();
-              setContextMenu(null);
-            }}
-          >
+          <button className="menu-item text-red-300" onClick={() => { deleteProvinceAndCleanup(contextMenu.provinceId); setContextMenu(null); }}>
             Delete Province
           </button>
         </div>
@@ -751,7 +1021,9 @@ export function App() {
             {generationProgress > 0 && (
               <div className="mt-3 text-sm">
                 <p>{generationStatus}</p>
-                <div className="mt-1 h-2 rounded bg-slate-800"><div className="h-2 rounded bg-blue-500" style={{ width: `${generationProgress}%` }} /></div>
+                <div className="mt-1 h-2 rounded bg-slate-800">
+                  <div className="h-2 rounded bg-blue-500" style={{ width: `${generationProgress}%` }} />
+                </div>
               </div>
             )}
             <div className="mt-4 flex justify-end gap-2">
@@ -764,40 +1036,77 @@ export function App() {
 
       {showExportDialog && (
         <div className="modal-wrap">
-          <div className="modal-panel">
+          <div className="modal-panel max-w-xl">
             <h2 className="text-lg font-semibold">Export</h2>
-            <p className="mt-1 text-sm text-slate-400">provinces.png will always use at least 8 pixels per cell. Estimated provinces file: ~{estimatedExportMB} MB</p>
-            <label className="mt-3 block text-sm">Pixels per cell (8-16)
-              <input type="range" min={8} max={16} value={exportSettings.pixelsPerCell} onChange={(e) => setExportSettings((s) => ({ ...s, pixelsPerCell: Number(e.target.value) }))} className="field" />
-            </label>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-              {([
-                "exportProvincesPng",
-                "exportTerrainPng",
-                "exportPoliticalPng",
-                "exportDefinitionCsv",
-                "exportStatesCsv",
-                "exportCountriesCsv",
-                "exportAdjacenciesCsv",
-                "exportProjectJson",
-              ] as const).map((key) => (
-                <label key={key} className="flex items-center gap-2">
-                  <input type="checkbox" checked={exportSettings[key]} onChange={(e) => setExportSettings((s) => ({ ...s, [key]: e.target.checked }))} />
-                  {key}
+            <p className="mt-1 text-sm text-slate-400">Diagnostics gate the export so broken projects are easier to catch before files are generated.</p>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <label>Pixels / Cell<input type="number" min={1} max={48} value={exportSettings.pixelsPerCell} onChange={(e) => setExportSettings((s) => ({ ...s, pixelsPerCell: Number(e.target.value) }))} className="field" /></label>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                Estimated PNG memory footprint: <span className="font-semibold text-blue-300">~{estimatedExportMB} MB</span>
+              </div>
+              {[
+                ["exportProvincesPng", "Province PNG"],
+                ["exportTerrainPng", "Terrain PNG"],
+                ["exportPoliticalPng", "Political PNG"],
+                ["exportDefinitionCsv", "Definition CSV"],
+                ["exportStatesCsv", "States CSV"],
+                ["exportCountriesCsv", "Countries CSV"],
+                ["exportAdjacenciesCsv", "Adjacencies CSV"],
+                ["exportProjectJson", "Project JSON"],
+              ].map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 rounded border border-slate-700 bg-slate-950 px-3 py-2">
+                  <input type="checkbox" checked={exportSettings[key as keyof ExportSettings] as boolean} onChange={(e) => setExportSettings((s) => ({ ...s, [key]: e.target.checked }))} />
+                  {label}
                 </label>
               ))}
             </div>
+            <div className="mt-4 rounded border border-slate-700 bg-slate-950/80 px-3 py-2 text-xs text-slate-300">
+              Diagnostics snapshot: {diagnostics.counts.errors} errors, {diagnostics.counts.warnings} warnings.
+            </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button className="btn" onClick={() => setShowExportDialog(false)}>Cancel</button>
-              <button
-                className="btn-primary"
-                onClick={async () => {
-                  await runExport({ ...exportSettings, pixelsPerCell: Math.max(8, exportSettings.pixelsPerCell), antiAlias: false });
-                  setShowExportDialog(false);
-                }}
-              >
-                Export Files
-              </button>
+              <button className="btn" onClick={() => setShowExportDialog(false)}>Close</button>
+              <button className="btn-primary" onClick={async () => { await runValidatedExport(); if (diagnostics.counts.errors === 0 && diagnostics.counts.warnings === 0) setShowExportDialog(false); }}>Run export</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportSummary && importSummary && (
+        <div className="modal-wrap">
+          <div className="modal-panel max-w-lg">
+            <h2 className="text-lg font-semibold">{importSummary.title}</h2>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">Project</span><p>{importSummary.projectName}</p></div>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">Map size</span><p>{importSummary.mapSize}</p></div>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">Provinces</span><p>{importSummary.provinceCount}</p></div>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">States</span><p>{importSummary.stateCount}</p></div>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">Countries</span><p>{importSummary.countryCount}</p></div>
+              <div className="rounded border border-slate-700 bg-slate-950 px-3 py-2"><span className="text-slate-400">Land / Sea</span><p>{importSummary.landCount} / {importSummary.seaCount}</p></div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn" onClick={() => setShowImportSummary(false)}>Close</button>
+              <button className="btn-primary" onClick={() => { setActiveTab("diagnostics"); setShowImportSummary(false); }}>Open diagnostics</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showExportValidation && (
+        <div className="modal-wrap">
+          <div className="modal-panel max-w-xl">
+            <h2 className="text-lg font-semibold">Fix diagnostics before export?</h2>
+            <p className="mt-2 text-sm text-slate-400">This project currently has {diagnostics.counts.errors} errors and {diagnostics.counts.warnings} warnings. You can review them first or export anyway.</p>
+            <div className="mt-4 space-y-2">
+              {diagnosticPreview.slice(0, 5).map((issue) => (
+                <div key={issue.id} className="rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+                  <p className="font-medium">{issue.title}</p>
+                  <p className="text-xs text-slate-400">{issue.detail}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn" onClick={() => { setActiveTab("diagnostics"); setShowExportValidation(false); setShowExportDialog(false); }}>Review diagnostics</button>
+              <button className="btn-primary" onClick={async () => { setShowExportValidation(false); await runExport(exportSettings); setShowExportDialog(false); }}>Export anyway</button>
             </div>
           </div>
         </div>
@@ -805,25 +1114,31 @@ export function App() {
 
       {showOpenAutoSave && (
         <div className="modal-wrap">
-          <div className="modal-panel">
-            <h2 className="text-lg font-semibold">Restore Last Session?</h2>
-            <p className="mt-2 text-sm text-slate-400">Autosave data was found in this browser.</p>
+          <div className="modal-panel max-w-lg">
+            <h2 className="text-lg font-semibold">Autosave found</h2>
+            <p className="mt-2 text-sm text-slate-400">A previous autosave exists in your browser. You can restore it or keep working with the current in-memory project.</p>
             <div className="mt-4 flex justify-end gap-2">
               <button className="btn" onClick={() => setShowOpenAutoSave(false)}>Ignore</button>
               <button
                 className="btn-primary"
                 onClick={() => {
-                  const raw = restoreFromAutoSave();
-                  if (!raw) return;
-                  try {
-                    loadProjectData(JSON.parse(raw) as ProjectData);
-                  } catch {
-                    toast.error("Autosave is corrupted");
+                  const autosave = restoreFromAutoSave();
+                  if (!autosave) {
+                    toast.error("No autosave found");
+                    return;
                   }
-                  setShowOpenAutoSave(false);
+                  try {
+                    const parsed: unknown = JSON.parse(autosave);
+                    if (!isProjectData(parsed)) throw new Error("Invalid autosave");
+                    loadProjectData(parsed);
+                    setShowOpenAutoSave(false);
+                  } catch (error) {
+                    console.error(error);
+                    toast.error("Autosave restore failed");
+                  }
                 }}
               >
-                Restore
+                Restore autosave
               </button>
             </div>
           </div>
