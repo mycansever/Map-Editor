@@ -45,6 +45,26 @@ import { BrushShape, ProvinceType, TerrainType, ToolType, ViewMode } from "@/typ
 
 type SideTab = "province" | "state" | "country" | "stats" | "history" | "bookmarks";
 
+
+function isProjectData(value: unknown): value is ProjectData {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Partial<ProjectData>;
+  return Boolean(
+    typeof data.name === "string"
+      && typeof data.author === "string"
+      && data.map
+      && typeof data.map.width === "number"
+      && typeof data.map.height === "number"
+      && Array.isArray(data.map.cells)
+      && Array.isArray(data.provinces)
+      && Array.isArray(data.states)
+      && Array.isArray(data.countries)
+      && Array.isArray(data.adjacencies)
+      && data.settings
+      && typeof data.settings.exportScale === "number",
+  );
+}
+
 function cloneProvince(p: Province): Province {
   return {
     ...p,
@@ -255,7 +275,14 @@ export function App() {
   };
 
   const loadProjectData = (data: ProjectData) => {
-    setRawMap(data.map.width, data.map.height, new Uint32Array(data.map.cells));
+    const safeWidth = Math.max(20, Math.min(500, Math.floor(data.map.width)));
+    const safeHeight = Math.max(20, Math.min(500, Math.floor(data.map.height)));
+    const expectedCellCount = safeWidth * safeHeight;
+    if (data.map.cells.length !== expectedCellCount) {
+      throw new Error("Map cell count does not match project dimensions");
+    }
+
+    setRawMap(safeWidth, safeHeight, new Uint32Array(data.map.cells));
     setProvinces(data.provinces.map(cloneProvince));
     setStates(data.states);
     setCountries(data.countries);
@@ -264,7 +291,16 @@ export function App() {
     settings.setExportScale(Math.max(8, data.settings.exportScale));
     clearHistory();
     toast.success("Project loaded");
-    window.setTimeout(() => zoomToFit(data.map.width, data.map.height, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
+    window.setTimeout(() => zoomToFit(safeWidth, safeHeight, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
+  };
+
+  const handleProjectImport = async (file: File) => {
+    const text = await file.text();
+    const parsed: unknown = JSON.parse(text);
+    if (!isProjectData(parsed)) {
+      throw new Error("Invalid project file structure");
+    }
+    loadProjectData(parsed);
   };
 
   const openProject = () => projectInputRef.current?.click();
@@ -298,73 +334,79 @@ export function App() {
 
   const importFromImage = async (file: File) => {
     const bitmap = await createImageBitmap(file);
-    const width = Math.min(500, Math.max(20, bitmap.width));
-    const height = Math.min(500, Math.max(20, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(bitmap, 0, 0, width, height);
-    const data = ctx.getImageData(0, 0, width, height).data;
+    try {
+      const width = Math.min(500, Math.max(20, bitmap.width));
+      const height = Math.min(500, Math.max(20, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      const data = ctx.getImageData(0, 0, width, height).data;
 
-    const colorToProvince = new Map<string, number>();
-    const importedProvinces: Province[] = [];
-    const cells = new Uint32Array(width * height);
-    let nextId = 2;
+      const colorToProvince = new Map<string, number>();
+      const importedProvinces: Province[] = [];
+      const cells = new Uint32Array(width * height);
+      let nextId = 2;
 
-    const ocean = provinces.get(OCEAN_PROVINCE_ID);
-    if (ocean) importedProvinces.push(cloneProvince(ocean));
+      const ocean = provinces.get(OCEAN_PROVINCE_ID);
+      if (ocean) importedProvinces.push(cloneProvince(ocean));
 
-    for (let i = 0; i < width * height; i++) {
-      const r = data[i * 4] ?? 0;
-      const g = data[i * 4 + 1] ?? 0;
-      const b = data[i * 4 + 2] ?? 0;
-      const key = `${r},${g},${b}`;
-      if (!colorToProvince.has(key)) {
-        const pid = nextId++;
-        colorToProvince.set(key, pid);
-        const type = b > r + 24 && b > g + 24 ? ProvinceType.Sea : ProvinceType.Land;
-        importedProvinces.push({
-          id: pid,
-          name: `Imported ${pid}`,
-          color: { r, g, b },
-          type,
-          terrain: type === ProvinceType.Sea ? TerrainType.Ocean : TerrainType.Plains,
-          continent: 0,
-          coastal: false,
-          isIsland: false,
-          manpower: 20000,
-          population: type === ProvinceType.Sea ? 0 : 120000,
-          growthRate: 1,
-          development: 3,
-          taxBase: 20,
-          productionEfficiency: 30,
-          victoryPoints: 0,
-          infrastructure: 1,
-          navalBase: 0,
-          airBase: 0,
-          fortLevel: 0,
-          supplyHub: false,
-          antiAir: 0,
-          radar: 0,
-          resources: [],
-          cellCount: 0,
-          centroid: { x: 0, y: 0 },
-          boundingBox: { minX: width, minY: height, maxX: 0, maxY: 0 },
-          neighbors: [],
-        });
+      for (let i = 0; i < width * height; i++) {
+        const r = data[i * 4] ?? 0;
+        const g = data[i * 4 + 1] ?? 0;
+        const b = data[i * 4 + 2] ?? 0;
+        const key = `${r},${g},${b}`;
+        if (!colorToProvince.has(key)) {
+          const pid = nextId++;
+          colorToProvince.set(key, pid);
+          const type = b > r + 24 && b > g + 24 ? ProvinceType.Sea : ProvinceType.Land;
+          importedProvinces.push({
+            id: pid,
+            name: `Imported ${pid}`,
+            color: { r, g, b },
+            type,
+            terrain: type === ProvinceType.Sea ? TerrainType.Ocean : TerrainType.Plains,
+            continent: 0,
+            coastal: false,
+            isIsland: false,
+            manpower: 20000,
+            population: type === ProvinceType.Sea ? 0 : 120000,
+            growthRate: 1,
+            development: 3,
+            taxBase: 20,
+            productionEfficiency: 30,
+            victoryPoints: 0,
+            infrastructure: 1,
+            navalBase: 0,
+            airBase: 0,
+            fortLevel: 0,
+            supplyHub: false,
+            antiAir: 0,
+            radar: 0,
+            resources: [],
+            cellCount: 0,
+            centroid: { x: 0, y: 0 },
+            boundingBox: { minX: width, minY: height, maxX: 0, maxY: 0 },
+            neighbors: [],
+          });
+        }
+        cells[i] = colorToProvince.get(key) ?? OCEAN_PROVINCE_ID;
       }
-      cells[i] = colorToProvince.get(key) ?? OCEAN_PROVINCE_ID;
-    }
 
-    setRawMap(width, height, cells);
-    setProvinces(importedProvinces);
-    setStates([]);
-    setCountries([]);
-    clearHistory();
-    recomputeDerived();
-    toast.success(`Image imported: ${colorToProvince.size} provinces`);
+      setRawMap(width, height, cells);
+      setProvinces(importedProvinces);
+      setStates([]);
+      setCountries([]);
+      clearHistory();
+      recomputeDerived();
+      settings.setProjectMeta(file.name.replace(/\.[^.]+$/, ""), settings.author);
+      toast.success(`Image imported: ${colorToProvince.size} provinces`);
+      window.setTimeout(() => zoomToFit(width, height, mapViewportRef.current?.clientWidth ?? 800, mapViewportRef.current?.clientHeight ?? 500), 10);
+    } finally {
+      bitmap.close();
+    }
   };
 
   const quickProvince = () => {
@@ -422,14 +464,16 @@ export function App() {
         accept=".json,.gse.json"
         className="hidden"
         onChange={async (event) => {
-          const file = event.target.files?.[0];
+          const input = event.currentTarget;
+          const file = input.files?.[0];
           if (!file) return;
           try {
-            const text = await file.text();
-            const parsed = JSON.parse(text) as ProjectData;
-            loadProjectData(parsed);
-          } catch {
-            toast.error("Invalid project file");
+            await handleProjectImport(file);
+          } catch (error) {
+            console.error(error);
+            toast.error("Project import failed. Check the file format.");
+          } finally {
+            input.value = "";
           }
         }}
       />
@@ -439,9 +483,17 @@ export function App() {
         accept="image/png,image/jpeg,image/bmp"
         className="hidden"
         onChange={async (event) => {
-          const file = event.target.files?.[0];
+          const input = event.currentTarget;
+          const file = input.files?.[0];
           if (!file) return;
-          await importFromImage(file);
+          try {
+            await importFromImage(file);
+          } catch (error) {
+            console.error(error);
+            toast.error("Image import failed. Use a valid PNG, JPG, or BMP file.");
+          } finally {
+            input.value = "";
+          }
         }}
       />
 
